@@ -1,0 +1,1 @@
+"""Hearth POS - Professional Restaurant POS System"""

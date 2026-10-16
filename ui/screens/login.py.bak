@@ -1,0 +1,315 @@
+"""Login screen with PIN pad."""
+from __future__ import annotations
+
+from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QMessageBox, QPushButton,
+    QComboBox
+)
+from PySide6.QtGui import QFont, QPixmap
+
+from app.ui.widgets import PinPadWidget
+from app.ui.widgets.component_library import get_palette
+from app.services.auth import auth_service, AuthError
+from app.db.models import StaffUser
+from app.i18n import t, set_language, get_language
+
+
+class LoginScreen(QWidget):
+    def apply_theme(self, theme_manager):
+        """Apply theme colors to this screen's widgets."""
+        palette = theme_manager._get_palette()
+        # Update background
+        self.setStyleSheet(f"""
+            OrderScreen {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {palette['bg_gradient_start"]}, stop:1 {palette['bg_gradient_end"]});
+            }}
+        """)
+        # Update specific widgets if needed - for now, rely on widget-level theming
+        # But we can update container backgrounds
+        # Find and update containers
+        for widget in self.findChildren(QWidget):
+            if widget.objectName() in ("LeftPanel", "RightPanel", "menu_scroll", "items_scroll", "totalsFrame"):
+                widget.setStyleSheet(f"""
+                    QWidget#{widget.objectName()} {{
+                        background: {palette['glass_bg"]};
+                        border: 1px solid {palette['glass_border"]};
+                        border-radius: 8px;
+                    }}
+                """)
+    """PIN-based login screen."""
+    
+    login_successful = Signal(StaffUser)
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._pending_user: StaffUser | None = None
+        self._setup_ui()
+    
+    def _setup_ui(self):
+        self.setObjectName("LoginScreen")
+        
+        main_layout = QVBoxLayout(self)
+        main_layout.setAlignment(Qt.AlignCenter)
+        main_layout.setSpacing(24)
+        main_layout.setContentsMargins(48, 48, 48, 48)
+        
+        # Venue name / logo area
+        header = QVBoxLayout()
+        header.setSpacing(8)
+        
+        venue_label = QLabel("HEARTH")
+        venue_label.setProperty("heading", "true")
+        venue_label.setAlignment(Qt.AlignCenter)
+        venue_label.setStyleSheet("font-size: 52px; font-weight: 800; color: @accent; letter-spacing: 6px; margin-bottom: 4px;")
+        header.addWidget(venue_label)
+        
+        subtitle = QLabel(t("app_name"))
+        subtitle.setProperty("subheading", "true")
+        subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setStyleSheet("color: @text-secondary; font-size: 16px; letter-spacing: 1px;")
+        header.addWidget(subtitle)
+
+        # Divider under header
+        divider = QFrame()
+        divider.setFrameShape(QFrame.HLine)
+        divider.setFixedHeight(1)
+        divider.setStyleSheet("background-color: @border; border: none;")
+        header.addWidget(divider)
+        
+        # Language selector
+        lang_row = QHBoxLayout()
+        lang_row.addStretch()
+        lang_label = QLabel(t("language") + ":")
+        lang_label.setStyleSheet("color: @text-tertiary; font-size: 12px;")
+        lang_row.addWidget(lang_label)
+        self.lang_combo = QComboBox()
+        self.lang_combo.addItem("English", "en")
+        self.lang_combo.addItem("العربية", "ar")
+        self.lang_combo.setCurrentIndex(0 if get_language() == "en" else 1)
+        self.lang_combo.setFixedWidth(120)
+        self.lang_combo.currentIndexChanged.connect(self._on_language_changed)
+        lang_row.addWidget(self.lang_combo)
+        lang_row.addStretch()
+        header.addLayout(lang_row)
+        
+        main_layout.addLayout(header)
+        
+        # Status message with role indicators
+        status_container = QFrame()
+        status_container.setStyleSheet("background-color: @surface; border-radius: 10px; padding: 12px;")
+        status_layout = QVBoxLayout(status_container)
+        status_layout.setSpacing(4)
+        status_layout.setContentsMargins(16, 12, 16, 12)
+        
+        self.status_label = QLabel("Enter your PIN to begin")
+        self.status_label.setAlignment(Qt.AlignCenter)
+        self.status_label.setProperty("heading", "false")
+        self.status_label.setStyleSheet("color: @text-secondary; font-size: 16px; font-weight: 500;")
+        self.status_label.setWordWrap(True)
+        status_layout.addWidget(self.status_label)
+        
+        # Role indicator hint
+        role_hint = QLabel("Staff PIN required")
+        role_hint.setAlignment(Qt.AlignCenter)
+        role_hint.setProperty("status", "true")
+        role_hint.setProperty("statusType", "accent")
+        status_layout.addWidget(role_hint, alignment=Qt.AlignCenter)
+        
+        main_layout.addWidget(status_container)
+        
+        # PIN pad with enhanced styling
+        pin_container = QFrame()
+        pin_container.setStyleSheet("background-color: @surface; border-radius: 14px; padding: 16px;")
+        pin_layout = QVBoxLayout(pin_container)
+        pin_layout.setSpacing(12)
+        pin_layout.setContentsMargins(12, 12, 12, 12)
+        
+        self.pin_pad = PinPadWidget()
+        self.pin_pad.setFixedWidth(380)
+        self.pin_pad.pin_entered.connect(self._on_pin_entered)
+        self.pin_pad.pin_cleared.connect(self._on_pin_cleared)
+        pin_layout.addWidget(self.pin_pad, alignment=Qt.AlignCenter)
+        
+        main_layout.addWidget(pin_container)
+        
+        # User confirmation (shown after PIN)
+        self.confirm_frame = QFrame()
+        self.confirm_frame.setObjectName("confirmFrame")
+        self.confirm_frame.setVisible(False)
+        confirm_layout = QVBoxLayout(self.confirm_frame)
+        confirm_layout.setSpacing(18)
+        confirm_layout.setContentsMargins(24, 24, 24, 24)
+        
+        self.user_photo = QLabel()
+        self.user_photo.setFixedSize(88, 88)
+        self.user_photo.setAlignment(Qt.AlignCenter)
+        self.user_photo.setStyleSheet("background-color: @accent; border-radius: 44px; color: white; font-size: 34px; font-weight: 700;")
+        confirm_layout.addWidget(self.user_photo, alignment=Qt.AlignCenter)
+        
+        self.user_name = QLabel("")
+        self.user_name.setProperty("heading", "true")
+        self.user_name.setStyleSheet("font-size: 24px;")
+        confirm_layout.addWidget(self.user_name)
+        
+        # Role badge
+        self.user_role_badge = QLabel("")
+        self.user_role_badge.setProperty("status", "true")
+        self.user_role_badge.setProperty("statusType", "accent")
+        self.user_role_badge.setAlignment(Qt.AlignCenter)
+        confirm_layout.addWidget(self.user_role_badge, alignment=Qt.AlignCenter)
+        
+        confirm_btn_layout = QHBoxLayout()
+        confirm_btn_layout.addStretch()
+        
+        self.confirm_btn = QPushButton("Confirm")
+        self.confirm_btn.setProperty("primary", "true")
+        self.confirm_btn.setMinimumWidth(180)
+        self.confirm_btn.clicked.connect(self._confirm_user)
+        confirm_btn_layout.addWidget(self.confirm_btn)
+        
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setMinimumWidth(180)
+        self.cancel_btn.clicked.connect(self._cancel_confirm)
+        confirm_btn_layout.addWidget(self.cancel_btn)
+        
+        confirm_btn_layout.addStretch()
+        confirm_layout.addLayout(confirm_btn_layout)
+        
+        main_layout.addWidget(self.confirm_frame, alignment=Qt.AlignCenter)
+        
+        main_layout.addStretch()
+        
+        # Version label
+        version = QLabel("v0.1.0")
+        version.setAlignment(Qt.AlignCenter)
+        version.setStyleSheet("color: @text-secondary; font-size: 12px;")
+        main_layout.addWidget(version)
+    
+    def _on_pin_entered(self, pin: str):
+        try:
+            user = auth_service.authenticate(pin)
+        except AuthError as e:
+            self._show_error(str(e))
+            # If it's a lockout message, start countdown
+            if "locked" in str(e).lower():
+                self._start_lockout_countdown(pin)
+            return
+        if user:
+            self._pending_user = user
+            self._show_confirmation(user)
+        else:
+            self._show_error("Invalid PIN")
+            QTimer.singleShot(1500, self._reset_status)
+    
+    def _start_lockout_countdown(self, pin: str):
+        """Count down lockout time and update the status label."""
+        remaining = 15 * 60  # matches LOCKOUT_SECONDS
+        self.status_label.setText(f"Locked out — retrying in {remaining // 60} minutes")
+        self.status_label.setStyleSheet("color: @err; font-size: 16px; font-weight: 600;")
+        self.pin_pad.setEnabled(False)
+        
+        def _tick():
+            nonlocal remaining
+            remaining -= 1
+            if remaining <= 0:
+                self.pin_pad.setEnabled(True)
+                self._reset_status()
+                return
+            mins, secs = divmod(remaining, 60)
+            self.status_label.setText(f"Locked out — retrying in {mins}:{secs:02d}")
+        
+        self._lockout_timer = QTimer(self)
+        self._lockout_timer.timeout.connect(_tick)
+        self._lockout_timer.start(1000)
+    
+    def _on_pin_cleared(self):
+        if self.confirm_frame.isVisible():
+            self._cancel_confirm()
+    
+    def _show_confirmation(self, user: StaffUser):
+        self.pin_pad.setVisible(False)
+        
+        # Set user initials as "photo"
+        initials = "".join([n[0] for n in user.name.split()[:2]]).upper()
+        self.user_photo.setText(initials)
+        self.user_name.setText(user.name)
+        self.user_role_badge.setText(user.role.value.title())
+        # Color the role badge based on role
+        role_colors = {
+            "manager": "err",
+            "cashier": "accent",
+            "waiter": "ok",
+            "kitchen": "warn"
+        }
+        role_type = role_colors.get(user.role.value, "info")
+        self.user_role_badge.setProperty("statusType", role_type)
+        self.user_role_badge.style().unpolish(self.user_role_badge)
+        self.user_role_badge.style().polish(self.user_role_badge)
+        
+        self.confirm_frame.setVisible(True)
+        self.confirm_frame.setStyleSheet("""
+            QFrame {
+                background-color: @surface;
+                border: 1px solid @border;
+                border-radius: 16px;
+            }
+        """)
+        self.status_label.setText(f"{t('welcome', name=user.name)}")
+        self.status_label.setStyleSheet("color: @ok; font-size: 16px; font-weight: 600;")
+    
+    def _confirm_user(self):
+        if self._pending_user:
+            self.login_successful.emit(self._pending_user)
+            self._reset()
+    
+    def _cancel_confirm(self):
+        self._pending_user = None
+        self.confirm_frame.setVisible(False)
+        self.pin_pad.setVisible(True)
+        self.pin_pad.clear()
+        self._reset_status()
+    
+    def _show_error(self, message: str):
+        self.status_label.setText(message)
+        self.status_label.setStyleSheet("color: @err; font-size: 16px; font-weight: 600;")
+        self.pin_pad.clear()
+    
+    def _reset_status(self):
+        if not self.confirm_frame.isVisible():
+            self.status_label.setText("Enter your PIN to begin")
+            self.status_label.setStyleSheet("color: @text-secondary; font-size: 16px;")
+    
+    def _reset(self):
+        self._pending_user = None
+        self.confirm_frame.setVisible(False)
+        self.pin_pad.setVisible(True)
+        self.pin_pad.clear()
+        self._reset_status()
+    
+    def _on_language_changed(self, index: int):
+        lang = self.lang_combo.itemData(index)
+        set_language(lang)
+        # Rebuild UI to apply translations
+        self._rebuild_ui()
+    
+    def _rebuild_ui(self):
+        """Rebuild the login screen with current language."""
+        # Clear existing layout
+        while self.layout().count():
+            item = self.layout().takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+            elif item.layout():
+                self._clear_layout(item.layout())
+        self._pending_user = None
+        self._setup_ui()
+    
+    def _clear_layout(self, layout):
+        while layout.count():
+            item = layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+            elif item.layout():
+                self._clear_layout(item.layout())
