@@ -55,3 +55,7 @@ desktop.ini
 # Logs
 *.log
 npm-debug.log*
+*.db
+*.db-shm
+*.db-wal
+*.spec

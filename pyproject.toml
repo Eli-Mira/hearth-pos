@@ -1,0 +1,57 @@
+[project]
+name = "hearth-pos"
+version = "0.1.0"
+description = "Professional Windows Restaurant POS System"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "PySide6>=6.7.0",
+    "SQLAlchemy>=2.0.30",
+    "alembic>=1.13.0",
+    "argon2-cffi>=23.1.0",
+    "python-escpos>=3.1",
+    "pyyaml>=6.0.1",
+]
+
+[project.scripts]
+hearth-pos = "app.main:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2.0",
+    "pytest-qt>=4.2.0",
+    "pytest-cov>=5.0.0",
+    "hypothesis>=6.92.0",
+    "black>=24.4.0",
+    "ruff>=0.4.0",
+    "mypy>=1.10.0",
+]
+
+[build-system]
+requires = ["setuptools>=69.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_functions = "test_*"
+pythonpath = ["."]
+norecursedirs = ["gesture_control", "vosk-model*"]
+addopts = "--ignore=tests/test_engine.py --ignore=tests/test_gesture_state.py --ignore=tests/test_mouse_control.py"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+select = ["E", "F", "I", "W", "UP", "B", "C4", "SIM", "T20", "ARG", "PTH"]
+ignore = ["S101", "PTH123"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
